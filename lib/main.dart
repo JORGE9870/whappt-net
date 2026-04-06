@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:archive/archive.dart';
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:html' as html;
 import 'dart:convert';
@@ -570,9 +571,14 @@ class _ChatMsg {
   final bool isForwarded;
   /// Ícono circular >> al lado de la imagen (independiente del texto "Reenviado")
   final bool showForwardIconAside;
+  /// Nota de voz (WebM/Opus en navegador)
+  final Uint8List? voiceBytes;
+  final int? voiceDurationSec;
+  final String? voiceMime;
   const _ChatMsg({
     this.text, this.assetPath, this.imageBytes, this.fileBytes, this.fileName, this.fileSize,
     required this.time, this.dateTime, required this.isMe, this.isForwarded = false, this.showForwardIconAside = false,
+    this.voiceBytes, this.voiceDurationSec, this.voiceMime,
   });
 
   _ChatMsg copyWith({
@@ -588,6 +594,7 @@ class _ChatMsg {
     isMe: isMe,
     isForwarded: isForwarded ?? this.isForwarded,
     showForwardIconAside: showForwardIconAside ?? this.showForwardIconAside,
+    voiceBytes: voiceBytes, voiceDurationSec: voiceDurationSec, voiceMime: voiceMime,
   );
 }
 
@@ -606,6 +613,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   late List<_ChatMsg> _msgs;
   bool _sendingAsMe = true;
   Uint8List? _contactPhoto; // foto de perfil del contacto
+
+  // Grabación de nota de voz (navegador)
+  bool _wantVoiceRecord = false;
+  bool _isRecordingVoice = false;
+  int _voiceRecordElapsedSec = 0;
+  Timer? _voiceRecordTicker;
+  html.MediaRecorder? _voiceMediaRecorder;
+  html.MediaStream? _voiceMediaStream;
+  final List<html.Blob> _voiceChunks = [];
+  String _voiceMimeUsed = 'audio/webm';
+  bool _voiceSendAfterStop = true;
+  html.EventListener? _voiceDataListener;
+  html.EventListener? _voiceStopListener;
 
   @override
   void initState() {
@@ -636,9 +656,169 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   void dispose() {
+    _abortVoiceRecording();
+    _voiceRecordTicker?.cancel();
     _textCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  String _fmtVoiceDuration(int sec) {
+    final s = sec.clamp(0, 359999);
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  String _pickVoiceMimeType() {
+    const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+    for (final c in cands) {
+      if (html.MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return 'audio/webm';
+  }
+
+  void _abortVoiceRecording() {
+    _wantVoiceRecord = false;
+    _voiceSendAfterStop = false;
+    _voiceRecordTicker?.cancel();
+    _voiceRecordTicker = null;
+    try {
+      _voiceMediaRecorder?.stop();
+    } catch (_) {}
+    if (_voiceMediaRecorder != null && _voiceDataListener != null) {
+      _voiceMediaRecorder!.removeEventListener('dataavailable', _voiceDataListener);
+    }
+    if (_voiceMediaRecorder != null && _voiceStopListener != null) {
+      _voiceMediaRecorder!.removeEventListener('stop', _voiceStopListener);
+    }
+    _voiceDataListener = null;
+    _voiceStopListener = null;
+    _voiceMediaRecorder = null;
+    _voiceChunks.clear();
+    _voiceMediaStream?.getTracks().forEach((t) => t.stop());
+    _voiceMediaStream = null;
+    _isRecordingVoice = false;
+    _voiceRecordElapsedSec = 0;
+  }
+
+  Future<void> _beginVoiceRecording() async {
+    if (_textCtrl.text.isNotEmpty) return;
+    _wantVoiceRecord = true;
+    final md = html.window.navigator.mediaDevices;
+    if (md == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Tu navegador no permite grabar audio'), backgroundColor: Color(0xFFE53935)),
+        );
+      }
+      return;
+    }
+    try {
+      final stream = await md.getUserMedia({'audio': true});
+      if (!_wantVoiceRecord) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      _voiceMimeUsed = _pickVoiceMimeType();
+      _voiceChunks.clear();
+      _voiceMediaStream = stream;
+      final recorder = html.MediaRecorder(stream, {'mimeType': _voiceMimeUsed});
+      _voiceMediaRecorder = recorder;
+
+      _voiceDataListener = (html.Event e) {
+        if (e is! html.BlobEvent) return;
+        final blob = e.data;
+        if (blob != null && blob.size > 0) _voiceChunks.add(blob);
+      };
+      recorder.addEventListener('dataavailable', _voiceDataListener);
+
+      _voiceStopListener = (html.Event e) {
+        recorder.removeEventListener('dataavailable', _voiceDataListener);
+        recorder.removeEventListener('stop', _voiceStopListener);
+        _voiceDataListener = null;
+        _voiceStopListener = null;
+        _voiceMediaRecorder = null;
+        _voiceRecordTicker?.cancel();
+        _voiceRecordTicker = null;
+        _voiceMediaStream?.getTracks().forEach((t) => t.stop());
+        _voiceMediaStream = null;
+
+        final send = _voiceSendAfterStop;
+        _voiceSendAfterStop = true;
+        _isRecordingVoice = false;
+        if (!send) {
+          _voiceChunks.clear();
+          if (mounted) setState(() {});
+          return;
+        }
+        if (_voiceChunks.isEmpty) {
+          if (mounted) {
+            setState(() {});
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Grabación vacía o demasiado corta'), backgroundColor: Color(0xFF8696A0)),
+            );
+          }
+          return;
+        }
+        final blob = html.Blob(_voiceChunks, _voiceMimeUsed);
+        _voiceChunks.clear();
+        final reader = html.FileReader();
+        reader.readAsArrayBuffer(blob);
+        reader.onLoad.listen((_) {
+          if (!mounted) return;
+          final raw = reader.result;
+          if (raw == null) return;
+          if (raw is! ByteBuffer) return;
+          final bytes = Uint8List.view(raw);
+          if (bytes.isEmpty) {
+            setState(() {});
+            return;
+          }
+          final dur = _voiceRecordElapsedSec.clamp(1, 359999);
+          setState(() {
+            _voiceRecordElapsedSec = 0;
+            _msgs.add(_ChatMsg(
+              voiceBytes: bytes,
+              voiceDurationSec: dur,
+              voiceMime: _voiceMimeUsed,
+              time: _now(),
+              dateTime: DateTime.now(),
+              isMe: _sendingAsMe,
+            ));
+          });
+          _scrollToBottom();
+        });
+      };
+      recorder.addEventListener('stop', _voiceStopListener);
+
+      recorder.start();
+      _isRecordingVoice = true;
+      _voiceRecordElapsedSec = 0;
+      _voiceRecordTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _voiceRecordElapsedSec++);
+      });
+      if (mounted) setState(() {});
+    } catch (e) {
+      _wantVoiceRecord = false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo usar el micrófono: $e'), backgroundColor: const Color(0xFFE53935)),
+        );
+      }
+    }
+  }
+
+  void _endVoiceRecording({required bool send}) {
+    if (!_isRecordingVoice && !_wantVoiceRecord) return;
+    if (!_isRecordingVoice) {
+      _wantVoiceRecord = false;
+      return;
+    }
+    _wantVoiceRecord = false;
+    _voiceSendAfterStop = send;
+    try {
+      _voiceMediaRecorder?.stop();
+    } catch (_) {}
+    if (mounted) setState(() {});
   }
 
   String _now() => _formatTimeLabel(DateTime.now());
@@ -748,7 +928,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 setState(() => _msgs[index] = msg.copyWith(isForwarded: !msg.isForwarded));
               },
             ),
-            if (msg.text != null || msg.imageBytes != null || msg.assetPath != null) ...[
+            if (msg.text != null || msg.imageBytes != null || msg.assetPath != null || msg.voiceBytes != null) ...[
               const Divider(color: Color(0xFF2A3942), height: 1),
               ListTile(
                 leading: Icon(
@@ -884,7 +1064,15 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   itemBuilder: (ctx, i) {
                     final m = _msgs[i];
                     Widget bubble;
-                    if (m.imageBytes != null) {
+                    if (m.voiceBytes != null && m.voiceDurationSec != null) {
+                      bubble = _buildVoiceMessage(
+                        m.voiceBytes!,
+                        m.voiceMime ?? 'audio/webm',
+                        m.voiceDurationSec!,
+                        m.time,
+                        m.isMe,
+                      );
+                    } else if (m.imageBytes != null) {
                       bubble = _buildBytesImage(
                         m.imageBytes!, m.time, m.isMe,
                         isForwarded: m.isForwarded, showForwardIconAside: m.showForwardIconAside,
@@ -944,6 +1132,36 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   ],
                 ),
               ),
+              if (_isRecordingVoice)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1F2C34),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFE53935).withValues(alpha: 0.7)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.fiber_manual_record, color: Color(0xFFE53935), size: 18),
+                        const SizedBox(width: 10),
+                        Text(
+                          'Grabando… ${_fmtVoiceDuration(_voiceRecordElapsedSec)}',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Suelta el botón para enviar',
+                            style: TextStyle(color: Color(0xFF8696A0), fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               // Input de mensaje
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
@@ -970,12 +1188,34 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: _textCtrl.text.isNotEmpty ? _sendText : null,
+                    Listener(
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (_) {
+                        if (_textCtrl.text.isEmpty) {
+                          _beginVoiceRecording();
+                        }
+                      },
+                      onPointerUp: (_) {
+                        if (_textCtrl.text.isNotEmpty) {
+                          _sendText();
+                        } else {
+                          _endVoiceRecording(send: true);
+                        }
+                      },
+                      onPointerCancel: (_) {
+                        if (_textCtrl.text.isEmpty) {
+                          _endVoiceRecording(send: false);
+                        }
+                      },
                       child: CircleAvatar(
-                        backgroundColor: const Color(0xFF00A884),
+                        backgroundColor: _isRecordingVoice
+                            ? const Color(0xFFE53935)
+                            : const Color(0xFF00A884),
                         radius: 24,
-                        child: Icon(_textCtrl.text.isNotEmpty ? Icons.send : Icons.mic, color: Colors.black),
+                        child: Icon(
+                          _textCtrl.text.isNotEmpty ? Icons.send : Icons.mic,
+                          color: Colors.black,
+                        ),
                       ),
                     ),
                   ],
@@ -983,6 +1223,50 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVoiceMessage(Uint8List bytes, String mime, int durationSec, String time, bool isMe) {
+    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF101C23);
+    return Padding(
+      padding: EdgeInsets.only(left: isMe ? 58 : 4, right: isMe ? 4 : 58, bottom: 2),
+      child: Row(
+        mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (!isMe) SizedBox(width: 8, height: 11, child: CustomPaint(painter: _TailPainter(color: color, isMe: false))),
+          Flexible(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 280),
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(isMe ? 7.5 : 0),
+                  topRight: Radius.circular(isMe ? 0 : 7.5),
+                  bottomLeft: const Radius.circular(7.5),
+                  bottomRight: const Radius.circular(7.5),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _VoiceNotePlayRow(bytes: bytes, mimeType: mime, durationSec: durationSec),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(time, style: const TextStyle(color: Color(0xFF8696A0), fontSize: 11)),
+                      if (isMe) ...[const SizedBox(width: 3), const Icon(Icons.done_all, color: Color(0xFF53BDEB), size: 15)],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isMe) SizedBox(width: 8, height: 11, child: CustomPaint(painter: _TailPainter(color: color, isMe: true))),
         ],
       ),
     );
@@ -1243,6 +1527,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       final prefix = '${fmtDate(m.dateTime)}, ${m.time} - ${m.isMe ? "Yo" : contactFirstName}: ';
       if (m.text != null) {
         lines.writeln('$prefix${m.text}');
+      } else if (m.voiceBytes != null) {
+        lines.writeln('$prefix''Nota de voz (${m.voiceDurationSec ?? 0}s)');
       } else if (m.imageBytes != null) {
         lines.writeln('${prefix}IMG-$mediaCount.jpg (archivo adjunto)');
         mediaCount++;
@@ -1282,8 +1568,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     // Agregar cada archivo/imagen de la conversación
     int imgCount = 1;
     int fileCount = 1;
+    int voiceCount = 1;
     for (final m in _msgs) {
-      if (m.imageBytes != null) {
+      if (m.voiceBytes != null) {
+        final ext = (m.voiceMime ?? '').contains('mp4') ? 'm4a' : 'webm';
+        final name = 'VOZ-$voiceCount.$ext';
+        archive.addFile(ArchiveFile(name, m.voiceBytes!.length, m.voiceBytes!));
+        voiceCount++;
+      } else if (m.imageBytes != null) {
         final name = 'IMG-$imgCount.jpg';
         archive.addFile(ArchiveFile(name, m.imageBytes!.length, m.imageBytes!));
         imgCount++;
@@ -1497,6 +1789,88 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Reproductor de nota de voz en web (AudioElement + blob URL)
+class _VoiceNotePlayRow extends StatefulWidget {
+  final Uint8List bytes;
+  final String mimeType;
+  final int durationSec;
+  const _VoiceNotePlayRow({required this.bytes, required this.mimeType, required this.durationSec});
+
+  @override
+  State<_VoiceNotePlayRow> createState() => _VoiceNotePlayRowState();
+}
+
+class _VoiceNotePlayRowState extends State<_VoiceNotePlayRow> {
+  bool _playing = false;
+  html.AudioElement? _audio;
+  String? _objectUrl;
+
+  String get _label {
+    final s = widget.durationSec.clamp(0, 359999);
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  void _toggle() {
+    if (_playing) {
+      _audio?.pause();
+      try {
+        _audio?.currentTime = 0;
+      } catch (_) {}
+      setState(() => _playing = false);
+      return;
+    }
+    _objectUrl ??= html.Url.createObjectUrlFromBlob(html.Blob([widget.bytes], widget.mimeType));
+    _audio ??= html.AudioElement()
+      ..src = _objectUrl!
+      ..onEnded.listen((_) {
+        if (mounted) setState(() => _playing = false);
+      });
+    _audio!.play();
+    setState(() => _playing = true);
+  }
+
+  @override
+  void dispose() {
+    _audio?.pause();
+    final u = _objectUrl;
+    if (u != null) html.Url.revokeObjectUrl(u);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _toggle,
+            borderRadius: BorderRadius.circular(22),
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: const BoxDecoration(color: Color(0xFF00A884), shape: BoxShape.circle),
+              child: Icon(_playing ? Icons.pause : Icons.play_arrow, color: Colors.black, size: 26),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Container(
+            height: 3,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.25),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(_label, style: const TextStyle(color: Color(0xFF8696A0), fontSize: 12, fontWeight: FontWeight.w500)),
+      ],
     );
   }
 }
