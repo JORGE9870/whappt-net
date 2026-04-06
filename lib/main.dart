@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:archive/archive.dart';
 import 'dart:math' as math;
 import 'dart:html' as html;
 import 'dart:convert';
@@ -25,7 +26,7 @@ class WhatsAppClone extends StatelessWidget {
         ),
       ),
       builder: (context, child) => _PhoneShell(child: child ?? const SizedBox()),
-      home: const PhoneVerificationScreen(),
+      home: const LoginScreen(),
     );
   }
 }
@@ -222,6 +223,100 @@ class _PhoneMockup extends StatelessWidget {
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.3),
             borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// --- PANTALLA DE LOGIN ---
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController _passCtrl = TextEditingController();
+  bool _obscure = true;
+  bool _error = false;
+
+  void _login() {
+    if (_passCtrl.text == 'isabel123') {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const PhoneVerificationScreen()),
+      );
+    } else {
+      setState(() => _error = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0B141B),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 36),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Logo WhatsApp
+              Container(
+                width: 90, height: 90,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00A884),
+                  shape: BoxShape.circle,
+                  boxShadow: [BoxShadow(color: const Color(0xFF00A884).withValues(alpha: 0.3), blurRadius: 24, spreadRadius: 4)],
+                ),
+                child: const Icon(Icons.lock, color: Colors.white, size: 44),
+              ),
+              const SizedBox(height: 28),
+              const Text('WhappsAt', style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('Ingresa tu clave para continuar', style: TextStyle(color: Color(0xFF8696A0), fontSize: 14)),
+              const SizedBox(height: 36),
+              // Campo clave
+              TextField(
+                controller: _passCtrl,
+                obscureText: _obscure,
+                onChanged: (_) => setState(() => _error = false),
+                onSubmitted: (_) => _login(),
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Contraseña',
+                  hintStyle: const TextStyle(color: Color(0xFF8696A0)),
+                  filled: true,
+                  fillColor: const Color(0xFF1F2C34),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A884), width: 1.5)),
+                  prefixIcon: const Icon(Icons.key, color: Color(0xFF8696A0)),
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, color: const Color(0xFF8696A0)),
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                  ),
+                  errorText: _error ? 'Clave incorrecta' : null,
+                  errorStyle: const TextStyle(color: Color(0xFFE53935)),
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: _login,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00A884),
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                  ),
+                  child: const Text('Entrar', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -468,11 +563,32 @@ class _ChatMsg {
   final Uint8List? imageBytes;
   final Uint8List? fileBytes;
   final String? fileName;
-  final int? fileSize; // en bytes
+  final int? fileSize;
   final String time;
+  final DateTime? dateTime;
   final bool isMe;
   final bool isForwarded;
-  const _ChatMsg({this.text, this.assetPath, this.imageBytes, this.fileBytes, this.fileName, this.fileSize, required this.time, required this.isMe, this.isForwarded = false});
+  /// Ícono circular >> al lado de la imagen (independiente del texto "Reenviado")
+  final bool showForwardIconAside;
+  const _ChatMsg({
+    this.text, this.assetPath, this.imageBytes, this.fileBytes, this.fileName, this.fileSize,
+    required this.time, this.dateTime, required this.isMe, this.isForwarded = false, this.showForwardIconAside = false,
+  });
+
+  _ChatMsg copyWith({
+    bool? isForwarded,
+    bool? showForwardIconAside,
+    String? time,
+    DateTime? dateTime,
+  }) => _ChatMsg(
+    text: text, assetPath: assetPath, imageBytes: imageBytes,
+    fileBytes: fileBytes, fileName: fileName, fileSize: fileSize,
+    time: time ?? this.time,
+    dateTime: dateTime ?? this.dateTime,
+    isMe: isMe,
+    isForwarded: isForwarded ?? this.isForwarded,
+    showForwardIconAside: showForwardIconAside ?? this.showForwardIconAside,
+  );
 }
 
 // --- PANTALLA DE CONVERSACIÓN ---
@@ -488,31 +604,33 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final TextEditingController _textCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
   late List<_ChatMsg> _msgs;
-  bool _sendingAsMe = true; // true = Yo, false = el otro
+  bool _sendingAsMe = true;
+  Uint8List? _contactPhoto; // foto de perfil del contacto
 
   @override
   void initState() {
     super.initState();
+    final d = DateTime(2026, 3, 28);
     _msgs = [
-      const _ChatMsg(text: 'Hola mucho gusto mi nombre es Isabel Castro, te estoy escribiendo porque yo me hice un examen con ustedes en 2022 quisiera saber si sera posible que me renueve el examen', time: '10:15 a. m.', isMe: true),
-      const _ChatMsg(text: 'Hola  muy buena tarde habla con claudia africano. claro que si dame un momento y validamos en el sistema', time: '10:20 a. m.', isMe: false),
-      const _ChatMsg(text: 'me regalas tu numero de documento', time: '10:20 a. m.', isMe: false),
-      const _ChatMsg(text: 'Claro que si, mi número de documento es 1.057.593.972', time: '10:25 a. m.', isMe: true),
-      const _ChatMsg(text: ' si Claro podemos renovar tu examen lo unico que no podemos es generar una  facturas porque como no va quedar registro de que registramos ese registro de esa atencion ', time: '10:24 a. m.', isMe: false),
-      const _ChatMsg(text: 'bueno si', time: '10:25 a. m.', isMe: true),
-      const _ChatMsg(text: 'oye somo un grupo de 25 personas aproximamente tu nos podria hacer el certificado a todos?', time: '10:25 a. m.', isMe: true),
-      const _ChatMsg(text: 'claro que les podemos hacer un descuento y le podemos dejar el certificado en 25 mil pesos a cada uno le podemos hacer el examen ocupacional a cada uno van a tener que enviar una foto y los datos personales numero de cedula nombres completos y apellidos numero de cedula peso talla eps y una firma lo unico que ya te dije no van a tener una factura como tal como si lo ubira facturado aca del resto no van a tener ninguna complicacion .', time: '10:26 a. m.', isMe: false),
-      const _ChatMsg(text: 'oye pero estas totalmente segura que los examenes son veridicos si son osea si son verificables porque yo se que la profesora puede llamar para verificar si nos hicimos los examenes y pues es muy impotante que si queden registrados en la ips y pues usted vayan a decir que si no lo hicimo alla', time: '10:25 a. m.', isMe: true),
-      const _ChatMsg(text: 'Claro con el QR que los vamos a enviar los pueden verificar, incluso si llaman al número voy a ser yo quien atienda las llamadasi claro que si claro que si no te preocupes por eso', time: '10:25 a. m.', isMe: false),
-      const _ChatMsg(text: 'y pues los certificados son expedidos directamente de la IPS', time: '10:25 a. m.', isMe: true),
-      const _ChatMsg(text: 'Valery Alejandra Cristiano Gonzalez', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(text: '30/03/2002', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(text: '23 años', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(text: '56kg', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(text: 'valerycristiano3002@gmail.com', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(text: 'Tel:3142417815', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(text: '1000160930 .', time: '11:05 p. m.', isMe: true, isForwarded: true),
-      const _ChatMsg(assetPath: 'images/perfil.jpg', time: '11:06 p. m.', isMe: true, isForwarded: true),
+      _ChatMsg(text: 'Hola mucho gusto mi nombre es Isabel Castro, te estoy escribiendo porque yo me hice un examen con ustedes en 2022 quisiera saber si sera posible que me renueve el examen', time: '10:15 a. m.', dateTime: d, isMe: true),
+      _ChatMsg(text: 'Hola  muy buena tarde habla con claudia africano. claro que si dame un momento y validamos en el sistema', time: '10:20 a. m.', dateTime: d, isMe: false),
+      _ChatMsg(text: 'me regalas tu numero de documento', time: '10:20 a. m.', dateTime: d, isMe: false),
+      _ChatMsg(text: 'Claro que si, mi número de documento es 1.057.593.972', time: '10:25 a. m.', dateTime: d, isMe: true),
+      _ChatMsg(text: ' si Claro podemos renovar tu examen lo unico que no podemos es generar una  facturas porque como no va quedar registro de que registramos ese registro de esa atencion ', time: '10:24 a. m.', dateTime: d, isMe: false),
+      _ChatMsg(text: 'bueno si', time: '10:25 a. m.', dateTime: d, isMe: true),
+      _ChatMsg(text: 'oye somo un grupo de 25 personas aproximamente tu nos podria hacer el certificado a todos?', time: '10:25 a. m.', dateTime: d, isMe: true),
+      _ChatMsg(text: 'claro que les podemos hacer un descuento y le podemos dejar el certificado en 25 mil pesos a cada uno le podemos hacer el examen ocupacional a cada uno van a tener que enviar una foto y los datos personales numero de cedula nombres completos y apellidos numero de cedula peso talla eps y una firma lo unico que ya te dije no van a tener una factura como tal como si lo ubira facturado aca del resto no van a tener ninguna complicacion .', time: '10:26 a. m.', dateTime: d, isMe: false),
+      _ChatMsg(text: 'oye pero estas totalmente segura que los examenes son veridicos si son osea si son verificables porque yo se que la profesora puede llamar para verificar si nos hicimos los examenes y pues es muy impotante que si queden registrados en la ips y pues usted vayan a decir que si no lo hicimo alla', time: '10:25 a. m.', dateTime: d, isMe: true),
+      _ChatMsg(text: 'Claro con el QR que los vamos a enviar los pueden verificar, incluso si llaman al número voy a ser yo quien atienda las llamadasi claro que si claro que si no te preocupes por eso', time: '10:25 a. m.', dateTime: d, isMe: false),
+      _ChatMsg(text: 'y pues los certificados son expedidos directamente de la IPS', time: '10:25 a. m.', dateTime: d, isMe: true),
+      _ChatMsg(text: 'Valery Alejandra Cristiano Gonzalez', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(text: '30/03/2002', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(text: '23 años', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(text: '56kg', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(text: 'valerycristiano3002@gmail.com', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(text: 'Tel:3142417815', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(text: '1000160930 .', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
+      _ChatMsg(assetPath: 'images/perfil.jpg', time: '11:06 p. m.', dateTime: d, isMe: true, isForwarded: true, showForwardIconAside: true),
     ];
   }
 
@@ -523,18 +641,40 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     super.dispose();
   }
 
-  String _now() {
-    final t = DateTime.now();
+  String _now() => _formatTimeLabel(DateTime.now());
+
+  /// Misma forma que WhatsApp en la app: "h:mm a. m.|p. m."
+  String _formatTimeLabel(DateTime t) {
     final h = t.hour > 12 ? t.hour - 12 : (t.hour == 0 ? 12 : t.hour);
     final m = t.minute.toString().padLeft(2, '0');
     return '$h:$m ${t.hour >= 12 ? "p. m." : "a. m."}';
+  }
+
+  Future<void> _editMessageTime(int index) async {
+    final msg = _msgs[index];
+    final base = msg.dateTime ?? DateTime.now();
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: base.hour, minute: base.minute),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.dark(primary: Color(0xFF00A884), surface: Color(0xFF1F2C34)),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked == null || !mounted) return;
+    final newDt = DateTime(base.year, base.month, base.day, picked.hour, picked.minute);
+    setState(() {
+      _msgs[index] = msg.copyWith(time: _formatTimeLabel(newDt), dateTime: newDt);
+    });
   }
 
   void _sendText() {
     final txt = _textCtrl.text.trim();
     if (txt.isEmpty) return;
     setState(() {
-      _msgs.add(_ChatMsg(text: txt, time: _now(), isMe: _sendingAsMe));
+      _msgs.add(_ChatMsg(text: txt, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
       _textCtrl.clear();
     });
     _scrollToBottom();
@@ -551,7 +691,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       reader.onLoad.listen((_) {
         final bytes = Uint8List.fromList(reader.result as List<int>);
         if (mounted) {
-          setState(() => _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), isMe: _sendingAsMe)));
+          setState(() => _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe)));
           _scrollToBottom();
         }
       });
@@ -574,7 +714,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             if (isImage) {
               _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), isMe: _sendingAsMe));
             } else {
-              _msgs.add(_ChatMsg(fileBytes: bytes, fileName: file.name, fileSize: file.size, time: _now(), isMe: _sendingAsMe));
+              _msgs.add(_ChatMsg(fileBytes: bytes, fileName: file.name, fileSize: file.size, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
             }
           });
           _scrollToBottom();
@@ -584,28 +724,94 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 
   void _confirmDelete(int index) {
-    showDialog(
+    final msg = _msgs[index];
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1F2C34),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Text('Eliminar mensaje', style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: const Text('¿Deseas eliminar este mensaje?', style: TextStyle(color: Color(0xFF8696A0))),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF8696A0))),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() => _msgs.removeAt(index));
-            },
-            child: const Text('Eliminar', style: TextStyle(color: Color(0xFFE53935), fontWeight: FontWeight.bold)),
-          ),
-        ],
+      backgroundColor: const Color(0xFF1F2C34),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Indicador de arrastre
+            Container(margin: const EdgeInsets.only(top: 8, bottom: 4), width: 40, height: 4, decoration: BoxDecoration(color: const Color(0xFF8696A0), borderRadius: BorderRadius.circular(2))),
+            // Opción: marcar/desmarcar reenviado
+            ListTile(
+              leading: Icon(
+                msg.isForwarded ? Icons.remove_circle_outline : Icons.reply_all,
+                color: const Color(0xFF00A884),
+              ),
+              title: Text(
+                msg.isForwarded ? 'Quitar "Reenviado"' : 'Marcar como reenviado',
+                style: const TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() => _msgs[index] = msg.copyWith(isForwarded: !msg.isForwarded));
+              },
+            ),
+            if (msg.text != null || msg.imageBytes != null || msg.assetPath != null) ...[
+              const Divider(color: Color(0xFF2A3942), height: 1),
+              ListTile(
+                leading: Icon(
+                  msg.showForwardIconAside ? Icons.visibility_off_outlined : Icons.forward,
+                  color: const Color(0xFF00A884),
+                ),
+                title: Text(
+                  msg.showForwardIconAside ? 'Quitar ícono de reenvío al lado' : 'Ícono de reenvío al lado',
+                  style: const TextStyle(color: Colors.white),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  setState(() => _msgs[index] = msg.copyWith(showForwardIconAside: !msg.showForwardIconAside));
+                },
+              ),
+            ],
+            const Divider(color: Color(0xFF2A3942), height: 1),
+            ListTile(
+              leading: const Icon(Icons.schedule, color: Color(0xFF00A884)),
+              title: const Text('Modificar hora', style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _editMessageTime(index);
+              },
+            ),
+            const Divider(color: Color(0xFF2A3942), height: 1),
+            // Opción: eliminar
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Color(0xFFE53935)),
+              title: const Text('Eliminar mensaje', style: TextStyle(color: Color(0xFFE53935))),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() => _msgs.removeAt(index));
+              },
+            ),
+            // Opción: cancelar
+            ListTile(
+              leading: const Icon(Icons.close, color: Color(0xFF8696A0)),
+              title: const Text('Cancelar', style: TextStyle(color: Color(0xFF8696A0))),
+              onTap: () => Navigator.pop(ctx),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
+  }
+
+  void _pickContactPhoto() {
+    final input = html.FileUploadInputElement()..accept = 'image/*';
+    input.click();
+    input.onChange.listen((_) {
+      final file = input.files?.first;
+      if (file == null) return;
+      final reader = html.FileReader();
+      reader.readAsArrayBuffer(file);
+      reader.onLoad.listen((_) {
+        final bytes = Uint8List.fromList(reader.result as List<int>);
+        if (mounted) setState(() => _contactPhoto = bytes);
+      });
+    });
   }
 
   void _scrollToBottom() {
@@ -623,7 +829,29 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         titleSpacing: 0,
         title: Row(
           children: [
-            const CircleAvatar(radius: 18, backgroundImage: AssetImage('images/perfil.jpg'), backgroundColor: Color(0xFF1F2C34)),
+            GestureDetector(
+              onTap: _pickContactPhoto,
+              child: Stack(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: const Color(0xFF1F2C34),
+                    backgroundImage: _contactPhoto != null
+                        ? MemoryImage(_contactPhoto!) as ImageProvider
+                        : const AssetImage('images/perfil.jpg'),
+                  ),
+                  // Ícono de cámara encima del avatar
+                  Positioned(
+                    bottom: 0, right: 0,
+                    child: Container(
+                      width: 13, height: 13,
+                      decoration: const BoxDecoration(color: Color(0xFF00A884), shape: BoxShape.circle),
+                      child: const Icon(Icons.camera_alt, size: 8, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(width: 8),
             Expanded(child: Text(widget.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
           ],
@@ -632,7 +860,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           IconButton(icon: const Icon(Icons.videocam), onPressed: () {}),
           IconButton(icon: const Icon(Icons.call), onPressed: () {}),
           PopupMenuButton<String>(
-            onSelected: (value) { if (value == 'export') _exportChatFile(context); },
+            onSelected: (value) {
+              if (value == 'export') {
+                _exportChatFile(context);
+              } else if (value == 'clear') {
+                _confirmClearChat();
+              }
+            },
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'info', child: Text('Info. del contacto')),
               const PopupMenuItem(value: 'export', child: Text('Exportar chat')),
@@ -655,10 +889,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   itemBuilder: (ctx, i) {
                     final m = _msgs[i];
                     Widget bubble;
-                    if (m.imageBytes != null) bubble = _buildBytesImage(m.imageBytes!, m.time, m.isMe);
-                    else if (m.fileBytes != null) bubble = _buildFileMessage(m.fileName ?? 'archivo', m.fileSize ?? 0, m.fileBytes!, m.time, m.isMe);
-                    else if (m.assetPath != null) bubble = _buildImageMessage(m.assetPath!, m.time, m.isMe, isForwarded: m.isForwarded);
-                    else bubble = _buildMessage(m.text ?? '', m.time, m.isMe, isForwarded: m.isForwarded);
+                    if (m.imageBytes != null) {
+                      bubble = _buildBytesImage(
+                        m.imageBytes!, m.time, m.isMe,
+                        isForwarded: m.isForwarded, showForwardIconAside: m.showForwardIconAside,
+                      );
+                    } else if (m.fileBytes != null) {
+                      bubble = _buildFileMessage(m.fileName ?? 'archivo', m.fileSize ?? 0, m.fileBytes!, m.time, m.isMe);
+                    } else if (m.assetPath != null) {
+                      bubble = _buildImageMessage(
+                        m.assetPath!, m.time, m.isMe,
+                        isForwarded: m.isForwarded, showForwardIconAside: m.showForwardIconAside,
+                      );
+                    } else {
+                      bubble = _buildMessage(
+                        m.text ?? '', m.time, m.isMe,
+                        isForwarded: m.isForwarded, showForwardIconAside: m.showForwardIconAside,
+                      );
+                    }
 
                     return GestureDetector(
                       onLongPress: () => _confirmDelete(i),
@@ -746,8 +994,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 
   // Imagen desde memoria (fotos adjuntadas por el usuario)
-  Widget _buildBytesImage(Uint8List bytes, String time, bool isMe) {
-    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF1F2C34);
+  Widget _buildBytesImage(
+    Uint8List bytes, String time, bool isMe, {
+    bool isForwarded = false,
+    bool showForwardIconAside = false,
+  }) {
+    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF101C23);
     return Padding(
       padding: EdgeInsets.only(left: isMe ? 58 : 4, right: isMe ? 4 : 58, bottom: 2),
       child: Row(
@@ -755,9 +1007,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (!isMe) SizedBox(width: 8, height: 11, child: CustomPaint(painter: _TailPainter(color: color, isMe: false))),
+          if (showForwardIconAside)
+            Padding(
+              padding: const EdgeInsets.only(right: 6, top: 160),
+              child: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: _ForwardArrow(size: 22, color: Colors.white.withValues(alpha: 0.9)),
+                ),
+              ),
+            ),
           Flexible(
             child: Container(
-              constraints: const BoxConstraints(maxWidth: 240),
+              constraints: const BoxConstraints(maxWidth: 300),
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
                 color: color,
@@ -769,8 +1036,21 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 ),
               ),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (isForwarded)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6, top: 4, bottom: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const _ForwardArrow(size: 14),
+                          const SizedBox(width: 3),
+                          const Text('Reenviado', style: TextStyle(color: Color(0xFF8696A0), fontSize: 11.5, fontStyle: FontStyle.italic)),
+                        ],
+                      ),
+                    ),
                   ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.memory(bytes, fit: BoxFit.cover)),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(4, 3, 4, 2),
@@ -794,7 +1074,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 
   Widget _buildFileMessage(String fileName, int fileSize, Uint8List bytes, String time, bool isMe) {
-    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF1F2C34);
+    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF101C23);
     final ext = fileName.contains('.') ? fileName.split('.').last.toUpperCase() : 'DOC';
     final sizeTxt = fileSize > 1024 * 1024
         ? '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB'
@@ -818,7 +1098,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           if (!isMe) SizedBox(width: 8, height: 11, child: CustomPaint(painter: _TailPainter(color: color, isMe: false))),
           Flexible(
             child: Container(
-              constraints: const BoxConstraints(maxWidth: 268),
+              constraints: const BoxConstraints(maxWidth: 320),
               padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
               decoration: BoxDecoration(
                 color: color,
@@ -891,127 +1171,249 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     );
   }
 
-  void _exportChatFile(BuildContext context) {
-    const String chatContent = """
-CHAT CON CLAUDIA FERNANDEZ IPS SOGAMOSO
----------------------------------------
-[10:15 a. m.] Isabel: Hola mucho gusto mi nombre es Isabel Castro...
-[10:20 a. m.] Claudia: Hola muy buena tarde habla con claudia africano...
-[10:20 a. m.] Claudia: me regalas tu numero de documento
-[10:25 a. m.] Isabel: Claro que si, mi número de documento es 1.057.593.972
-[10:24 a. m.] Claudia: si Claro podemos renovar tu examen...
-[10:25 a. m.] Isabel: bueno si
-[10:25 a. m.] Isabel: oye somo un grupo de 25 personas aproximadamente...
-[10:26 a. m.] Claudia: claro que les podemos hacer un descuento...
-[10:25 a. m.] Isabel: oye pero estas totalmente segura que los examenes son veridicos...
-[10:25 a. m.] Claudia: Claro con el QR que los vamos a enviar los pueden verificar...
-[10:25 a. m.] Isabel: y pues los certificados son expedidos directamente de la IPS
-
-MENSAJES REENVIADOS:
-[11:05 p. m.] Isabel: Valery Alejandra Cristiano Gonzalez
-[11:05 p. m.] Isabel: 30/03/2002
-[11:05 p. m.] Isabel: 23 años
-[11:05 p. m.] Isabel: 56kg
-[11:05 p. m.] Isabel: valerycristiano3002@gmail.com
-[11:05 p. m.] Isabel: Tel:3142417815
-[11:05 p. m.] Isabel: 1000160930 .
-[11:06 p. m.] Isabel: Foto: (perfil.jpg)
-""";
-
-    final bytes = utf8.encode(chatContent);
-    final blob = html.Blob([bytes]);
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    final anchor = html.AnchorElement(href: url)
-      ..setAttribute("download", "whatsapp_chat_claudia.txt")
-      ..click();
-    html.Url.revokeObjectUrl(url);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Chat descargado como whatsapp_chat_claudia.txt'),
-        backgroundColor: Color(0xFF00A884),
-      ),
-    );
-  }
-
-  Widget _buildMessage(String text, String time, bool isMe, {bool isForwarded = false}) {
-    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF1F2C34);
-    return Padding(
-      padding: EdgeInsets.only(
-        left: isMe ? 58 : 4,
-        right: isMe ? 4 : 58,
-        bottom: 2,
-      ),
-      child: Row(
-        mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Colita izquierda (mensajes recibidos)
-          if (!isMe)
-            SizedBox(
-              width: 8, height: 11,
-              child: CustomPaint(painter: _TailPainter(color: color, isMe: false)),
-            ),
-          Flexible(
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 268),
-              padding: const EdgeInsets.fromLTRB(9, 6, 9, 6),
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(isMe ? 7.5 : 0),
-                  topRight: Radius.circular(isMe ? 0 : 7.5),
-                  bottomLeft: const Radius.circular(7.5),
-                  bottomRight: const Radius.circular(7.5),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isForwarded)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 3),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const _ForwardArrow(size: 14),
-                          const SizedBox(width: 3),
-                          const Text('Reenviado', style: TextStyle(color: Color(0xFF8696A0), fontSize: 11.5, fontStyle: FontStyle.italic)),
-                        ],
-                      ),
-                    ),
-                  Text(text, style: const TextStyle(color: Colors.white, fontSize: 14.5, height: 1.35)),
-                  const SizedBox(height: 2),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    mainAxisSize: MainAxisSize.max,
-                    children: [
-                      const Expanded(child: SizedBox(width: 24)),
-                      Text(time, style: const TextStyle(color: Color(0xFF8696A0), fontSize: 11)),
-                      if (isMe) ...[
-                        const SizedBox(width: 3),
-                        const Icon(Icons.done_all, color: Color(0xFF53BDEB), size: 15),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
+  void _confirmClearChat() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1F2C34),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Vaciar chat', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text(
+          '¿Borrar todos los mensajes de esta conversación? No se puede deshacer.',
+          style: TextStyle(color: Color(0xFF8696A0)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF8696A0))),
           ),
-          // Colita derecha (mensajes enviados)
-          if (isMe)
-            SizedBox(
-              width: 8, height: 11,
-              child: CustomPaint(painter: _TailPainter(color: color, isMe: true)),
-            ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _msgs.clear());
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Chat vaciado'), backgroundColor: Color(0xFF00A884)),
+              );
+            },
+            child: const Text('Vaciar', style: TextStyle(color: Color(0xFFE53935), fontWeight: FontWeight.bold)),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildImageMessage(String assetPath, String time, bool isMe, {bool isForwarded = false}) {
-    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF1F2C34);
+  void _exportChatFile(BuildContext context) {
+    final contactFirstName = widget.name.split(' ').first;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1F2C34),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Exportar chat', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text('¿Cómo deseas exportar la conversación?', style: TextStyle(color: Color(0xFF8696A0))),
+        actions: [
+          // Sin archivos — solo .txt
+          TextButton.icon(
+            icon: const Icon(Icons.text_snippet_outlined, color: Color(0xFF8696A0)),
+            label: const Text('Sin archivos', style: TextStyle(color: Color(0xFF8696A0))),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _doExportTxt(contactFirstName);
+            },
+          ),
+          // Con archivos — ZIP
+          ElevatedButton.icon(
+            icon: const Icon(Icons.folder_zip_outlined, color: Colors.black),
+            label: const Text('Con archivos', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A884), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _doExportZip(contactFirstName);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Genera el texto del chat en formato WhatsApp
+  String _buildChatTxt(String contactFirstName) {
+    String fmtDate(DateTime? dt) => dt == null ? '' : '${dt.day}/${dt.month}/${dt.year}';
+    final lines = StringBuffer();
+    final firstDate = _msgs.isNotEmpty ? fmtDate(_msgs.first.dateTime) : fmtDate(DateTime.now());
+    lines.writeln('$firstDate, 12:00 a. m. - Los mensajes y las llamadas están cifrados de extremo a extremo. Solo las personas en este chat pueden leerlos, escucharlos o compartirlos. *Obtén más información*.');
+    lines.writeln();
+    int mediaCount = 1;
+    for (final m in _msgs) {
+      final prefix = '${fmtDate(m.dateTime)}, ${m.time} - ${m.isMe ? "Yo" : contactFirstName}: ';
+      if (m.text != null) {
+        lines.writeln('$prefix${m.text}');
+      } else if (m.imageBytes != null) {
+        lines.writeln('${prefix}IMG-$mediaCount.jpg (archivo adjunto)');
+        mediaCount++;
+      } else if (m.assetPath != null) {
+        lines.writeln('${prefix}imagen omitida');
+      } else if (m.fileBytes != null) {
+        lines.writeln('$prefix${m.fileName ?? 'archivo_$mediaCount'} (archivo adjunto)');
+        mediaCount++;
+      }
+    }
+    return lines.toString();
+  }
+
+  // Exportar solo TXT
+  void _doExportTxt(String contactFirstName) {
+    final txt = _buildChatTxt(contactFirstName);
+    final bytes = utf8.encode(txt);
+    final blob = html.Blob([bytes]);
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    html.AnchorElement(href: url)
+      ..setAttribute('download', 'Chat de WhatsApp con $contactFirstName.txt')
+      ..click();
+    html.Url.revokeObjectUrl(url);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Chat exportado (.txt)'), backgroundColor: Color(0xFF00A884)),
+    );
+  }
+
+  // Exportar ZIP con TXT + todos los archivos adjuntos
+  void _doExportZip(String contactFirstName) {
+    final archive = Archive();
+
+    // Agregar el .txt
+    final txtBytes = utf8.encode(_buildChatTxt(contactFirstName));
+    archive.addFile(ArchiveFile('Chat de WhatsApp con $contactFirstName.txt', txtBytes.length, txtBytes));
+
+    // Agregar cada archivo/imagen de la conversación
+    int imgCount = 1;
+    int fileCount = 1;
+    for (final m in _msgs) {
+      if (m.imageBytes != null) {
+        final name = 'IMG-$imgCount.jpg';
+        archive.addFile(ArchiveFile(name, m.imageBytes!.length, m.imageBytes!));
+        imgCount++;
+      } else if (m.fileBytes != null && m.fileName != null) {
+        archive.addFile(ArchiveFile(m.fileName!, m.fileBytes!.length, m.fileBytes!));
+        fileCount++;
+      }
+    }
+
+    // Codificar ZIP y descargar
+    final zipBytes = ZipEncoder().encode(archive);
+    if (zipBytes == null) return;
+    final blob = html.Blob([Uint8List.fromList(zipBytes)]);
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    html.AnchorElement(href: url)
+      ..setAttribute('download', 'Chat de WhatsApp con $contactFirstName.zip')
+      ..click();
+    html.Url.revokeObjectUrl(url);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Exportado: ${imgCount - 1} imágenes + ${fileCount - 1} archivos'), backgroundColor: const Color(0xFF00A884)),
+    );
+  }
+
+  Widget _buildMessage(String text, String time, bool isMe, {bool isForwarded = false, bool showForwardIconAside = false}) {
+    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF101C23);
+    return Padding(
+      padding: EdgeInsets.only(
+        left: isMe ? 58 : 4,
+        right: isMe ? 4 : 58,
+        bottom: 2,
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (!isMe)
+              Align(
+                alignment: Alignment.bottomLeft,
+                child: SizedBox(
+                  width: 8, height: 11,
+                  child: CustomPaint(painter: _TailPainter(color: color, isMe: false)),
+                ),
+              ),
+            if (showForwardIconAside)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: Align(
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.35),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: _ForwardArrow(size: 22, color: Colors.white.withValues(alpha: 0.9)),
+                    ),
+                  ),
+                ),
+              ),
+            Flexible(
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 320),
+                padding: const EdgeInsets.fromLTRB(9, 6, 9, 6),
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(isMe ? 7.5 : 0),
+                    topRight: Radius.circular(isMe ? 0 : 7.5),
+                    bottomLeft: const Radius.circular(7.5),
+                    bottomRight: const Radius.circular(7.5),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (isForwarded)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 3),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const _ForwardArrow(size: 14),
+                            const SizedBox(width: 3),
+                            const Text('Reenviado', style: TextStyle(color: Color(0xFF8696A0), fontSize: 11.5, fontStyle: FontStyle.italic)),
+                          ],
+                        ),
+                      ),
+                    Text(text, style: const TextStyle(color: Colors.white, fontSize: 14.5, height: 1.35)),
+                    const SizedBox(height: 2),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.max,
+                      children: [
+                        const Expanded(child: SizedBox(width: 24)),
+                        Text(time, style: const TextStyle(color: Color(0xFF8696A0), fontSize: 11)),
+                        if (isMe) ...[
+                          const SizedBox(width: 3),
+                          const Icon(Icons.done_all, color: Color(0xFF53BDEB), size: 15),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (isMe)
+              Align(
+                alignment: Alignment.bottomRight,
+                child: SizedBox(
+                  width: 8, height: 11,
+                  child: CustomPaint(painter: _TailPainter(color: color, isMe: true)),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildImageMessage(String assetPath, String time, bool isMe, {bool isForwarded = false, bool showForwardIconAside = false}) {
+    final color = isMe ? const Color(0xFF003C2F) : const Color(0xFF101C23);
     return Padding(
       padding: EdgeInsets.only(
         left: isMe ? 58 : 4,
@@ -1027,8 +1429,7 @@ MENSAJES REENVIADOS:
               width: 8, height: 11,
               child: CustomPaint(painter: _TailPainter(color: color, isMe: false)),
             ),
-          // Icono de reenvío al lado izquierdo de la imagen
-          if (isForwarded)
+          if (showForwardIconAside)
             Padding(
               padding: const EdgeInsets.only(right: 6, top: 160),
               child: Container(
@@ -1045,7 +1446,7 @@ MENSAJES REENVIADOS:
             ),
           Flexible(
             child: Container(
-              constraints: const BoxConstraints(maxWidth: 240),
+              constraints: const BoxConstraints(maxWidth: 300),
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
                 color: color,
