@@ -712,7 +712,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         if (mounted) {
           setState(() {
             if (isImage) {
-              _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), isMe: _sendingAsMe));
+              _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
             } else {
               _msgs.add(_ChatMsg(fileBytes: bytes, fileName: file.name, fileSize: file.size, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
             }
@@ -733,9 +733,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Indicador de arrastre
             Container(margin: const EdgeInsets.only(top: 8, bottom: 4), width: 40, height: 4, decoration: BoxDecoration(color: const Color(0xFF8696A0), borderRadius: BorderRadius.circular(2))),
-            // Opción: marcar/desmarcar reenviado
             ListTile(
               leading: Icon(
                 msg.isForwarded ? Icons.remove_circle_outline : Icons.reply_all,
@@ -777,7 +775,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               },
             ),
             const Divider(color: Color(0xFF2A3942), height: 1),
-            // Opción: eliminar
             ListTile(
               leading: const Icon(Icons.delete_outline, color: Color(0xFFE53935)),
               title: const Text('Eliminar mensaje', style: TextStyle(color: Color(0xFFE53935))),
@@ -786,7 +783,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 setState(() => _msgs.removeAt(index));
               },
             ),
-            // Opción: cancelar
             ListTile(
               leading: const Icon(Icons.close, color: Color(0xFF8696A0)),
               title: const Text('Cancelar', style: TextStyle(color: Color(0xFF8696A0))),
@@ -840,7 +836,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                         ? MemoryImage(_contactPhoto!) as ImageProvider
                         : const AssetImage('images/perfil.jpg'),
                   ),
-                  // Ícono de cámara encima del avatar
                   Positioned(
                     bottom: 0, right: 0,
                     child: Container(
