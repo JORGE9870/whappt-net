@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>WhappsAt necesita el micrófono para grabar notas de voz en el chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>WhappsAt necesita acceso a fotos para adjuntar imágenes y cambiar la foto de perfil del contacto.</string>
 </dict>
 </plist>

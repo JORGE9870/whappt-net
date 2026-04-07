@@ -1,12 +1,21 @@
-import 'package:flutter/material.dart';
-import 'package:archive/archive.dart';
 import 'dart:async';
-import 'dart:math' as math;
-import 'dart:html' as html;
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
+import 'package:flutter/material.dart';
+
+import 'models/chat_message.dart';
+import 'persistence/app_prefs.dart';
+import 'persistence/chat_storage.dart';
+import 'permissions/mobile_storage_prompt.dart';
+import 'platform/files.dart';
+import 'voice/voice_chat.dart';
+import 'voice/voice_note_player.dart';
+
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const WhatsAppClone());
 }
 
@@ -244,6 +253,15 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscure = true;
   bool _error = false;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      promptMobileStorageIfNeeded(context);
+    });
+  }
+
   void _login() {
     if (_passCtrl.text == 'isabel123') {
       Navigator.pushReplacement(
@@ -334,10 +352,27 @@ class PhoneVerificationScreen extends StatefulWidget {
 }
 
 class _PhoneVerificationScreenState extends State<PhoneVerificationScreen> {
-  final TextEditingController _phoneController = TextEditingController();
+  late final TextEditingController _phoneController;
   final String _selectedCountryCode = "+ 57";
 
-  void _onNextPressed() {
+  @override
+  void initState() {
+    super.initState();
+    _phoneController = TextEditingController();
+    AppPrefs.loadPhone().then((saved) {
+      if (saved != null && mounted) _phoneController.text = saved;
+    });
+  }
+
+  @override
+  void dispose() {
+    _phoneController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onNextPressed() async {
+    await AppPrefs.savePhone(_phoneController.text);
+    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (context) => const ChatListScreen()),
@@ -557,47 +592,6 @@ class ChatListScreen extends StatelessWidget {
   }
 }
 
-// Modelo de mensaje
-class _ChatMsg {
-  final String? text;
-  final String? assetPath;
-  final Uint8List? imageBytes;
-  final Uint8List? fileBytes;
-  final String? fileName;
-  final int? fileSize;
-  final String time;
-  final DateTime? dateTime;
-  final bool isMe;
-  final bool isForwarded;
-  /// Ícono circular >> al lado de la imagen (independiente del texto "Reenviado")
-  final bool showForwardIconAside;
-  /// Nota de voz (WebM/Opus en navegador)
-  final Uint8List? voiceBytes;
-  final int? voiceDurationSec;
-  final String? voiceMime;
-  const _ChatMsg({
-    this.text, this.assetPath, this.imageBytes, this.fileBytes, this.fileName, this.fileSize,
-    required this.time, this.dateTime, required this.isMe, this.isForwarded = false, this.showForwardIconAside = false,
-    this.voiceBytes, this.voiceDurationSec, this.voiceMime,
-  });
-
-  _ChatMsg copyWith({
-    bool? isForwarded,
-    bool? showForwardIconAside,
-    String? time,
-    DateTime? dateTime,
-  }) => _ChatMsg(
-    text: text, assetPath: assetPath, imageBytes: imageBytes,
-    fileBytes: fileBytes, fileName: fileName, fileSize: fileSize,
-    time: time ?? this.time,
-    dateTime: dateTime ?? this.dateTime,
-    isMe: isMe,
-    isForwarded: isForwarded ?? this.isForwarded,
-    showForwardIconAside: showForwardIconAside ?? this.showForwardIconAside,
-    voiceBytes: voiceBytes, voiceDurationSec: voiceDurationSec, voiceMime: voiceMime,
-  );
-}
-
 // --- PANTALLA DE CONVERSACIÓN ---
 class ChatDetailScreen extends StatefulWidget {
   final String name;
@@ -610,54 +604,78 @@ class ChatDetailScreen extends StatefulWidget {
 class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final TextEditingController _textCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
-  late List<_ChatMsg> _msgs;
+  List<ChatMsg> _msgs = [];
   bool _sendingAsMe = true;
-  Uint8List? _contactPhoto; // foto de perfil del contacto
-
-  // Grabación de nota de voz (navegador)
-  bool _wantVoiceRecord = false;
-  bool _isRecordingVoice = false;
-  int _voiceRecordElapsedSec = 0;
-  Timer? _voiceRecordTicker;
-  html.MediaRecorder? _voiceMediaRecorder;
-  html.MediaStream? _voiceMediaStream;
-  final List<html.Blob> _voiceChunks = [];
-  String _voiceMimeUsed = 'audio/webm';
-  bool _voiceSendAfterStop = true;
-  html.EventListener? _voiceDataListener;
-  html.EventListener? _voiceStopListener;
+  Uint8List? _contactPhoto;
+  bool _chatReady = false;
+  late final VoiceChatController _voice;
 
   @override
   void initState() {
     super.initState();
-    final d = DateTime(2026, 3, 28);
-    _msgs = [
-      _ChatMsg(text: 'Hola mucho gusto mi nombre es Isabel Castro, te estoy escribiendo porque yo me hice un examen con ustedes en 2022 quisiera saber si sera posible que me renueve el examen', time: '10:15 a. m.', dateTime: d, isMe: true),
-      _ChatMsg(text: 'Hola  muy buena tarde habla con claudia africano. claro que si dame un momento y validamos en el sistema', time: '10:20 a. m.', dateTime: d, isMe: false),
-      _ChatMsg(text: 'me regalas tu numero de documento', time: '10:20 a. m.', dateTime: d, isMe: false),
-      _ChatMsg(text: 'Claro que si, mi número de documento es 1.057.593.972', time: '10:25 a. m.', dateTime: d, isMe: true),
-      _ChatMsg(text: ' si Claro podemos renovar tu examen lo unico que no podemos es generar una  facturas porque como no va quedar registro de que registramos ese registro de esa atencion ', time: '10:24 a. m.', dateTime: d, isMe: false),
-      _ChatMsg(text: 'bueno si', time: '10:25 a. m.', dateTime: d, isMe: true),
-      _ChatMsg(text: 'oye somo un grupo de 25 personas aproximamente tu nos podria hacer el certificado a todos?', time: '10:25 a. m.', dateTime: d, isMe: true),
-      _ChatMsg(text: 'claro que les podemos hacer un descuento y le podemos dejar el certificado en 25 mil pesos a cada uno le podemos hacer el examen ocupacional a cada uno van a tener que enviar una foto y los datos personales numero de cedula nombres completos y apellidos numero de cedula peso talla eps y una firma lo unico que ya te dije no van a tener una factura como tal como si lo ubira facturado aca del resto no van a tener ninguna complicacion .', time: '10:26 a. m.', dateTime: d, isMe: false),
-      _ChatMsg(text: 'oye pero estas totalmente segura que los examenes son veridicos si son osea si son verificables porque yo se que la profesora puede llamar para verificar si nos hicimos los examenes y pues es muy impotante que si queden registrados en la ips y pues usted vayan a decir que si no lo hicimo alla', time: '10:25 a. m.', dateTime: d, isMe: true),
-      _ChatMsg(text: 'Claro con el QR que los vamos a enviar los pueden verificar, incluso si llaman al número voy a ser yo quien atienda las llamadasi claro que si claro que si no te preocupes por eso', time: '10:25 a. m.', dateTime: d, isMe: false),
-      _ChatMsg(text: 'y pues los certificados son expedidos directamente de la IPS', time: '10:25 a. m.', dateTime: d, isMe: true),
-      _ChatMsg(text: 'Valery Alejandra Cristiano Gonzalez', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(text: '30/03/2002', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(text: '23 años', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(text: '56kg', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(text: 'valerycristiano3002@gmail.com', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(text: 'Tel:3142417815', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(text: '1000160930 .', time: '11:05 p. m.', dateTime: d, isMe: true, isForwarded: true),
-      _ChatMsg(assetPath: 'images/perfil.jpg', time: '11:06 p. m.', dateTime: d, isMe: true, isForwarded: true, showForwardIconAside: true),
-    ];
+    _voice = VoiceChatController(
+      onRecorded: (bytes, dur, mime) {
+        if (!mounted) return;
+        setState(() {
+          _msgs.add(ChatMsg(
+            voiceBytes: bytes,
+            voiceDurationSec: dur,
+            voiceMime: mime,
+            time: _now(),
+            dateTime: DateTime.now(),
+            isMe: _sendingAsMe,
+          ));
+        });
+        _persistChat();
+        _scrollToBottom();
+      },
+      onUiUpdate: () {
+        if (mounted) setState(() {});
+      },
+      onError: (message) {
+        if (!mounted) return;
+        final soft = message.contains('vacía') || message.contains('corta');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: soft ? const Color(0xFF8696A0) : const Color(0xFFE53935),
+          ),
+        );
+      },
+    );
+    _loadChatFromStorage();
+  }
+
+  Future<void> _loadChatFromStorage() async {
+    final stored = await ChatLocalStorage.loadMessages(widget.name);
+    final photo = await ChatLocalStorage.loadContactPhoto(widget.name);
+    if (!mounted) return;
+    setState(() {
+      _msgs = stored != null ? List<ChatMsg>.from(stored) : List<ChatMsg>.from(defaultMessagesForChat(widget.name));
+      _contactPhoto = photo;
+      _chatReady = true;
+    });
+    if (stored == null) await _persistChat();
+  }
+
+  Future<void> _persistChat() async {
+    try {
+      await ChatLocalStorage.saveMessages(widget.name, _msgs);
+      await ChatLocalStorage.saveContactPhoto(widget.name, _contactPhoto);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No se pudo guardar (espacio, permisos o modo privado): $e'),
+          backgroundColor: const Color(0xFFE53935),
+        ),
+      );
+    }
   }
 
   @override
   void dispose() {
-    _abortVoiceRecording();
-    _voiceRecordTicker?.cancel();
+    _voice.dispose();
     _textCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -666,159 +684,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   String _fmtVoiceDuration(int sec) {
     final s = sec.clamp(0, 359999);
     return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
-  }
-
-  String _pickVoiceMimeType() {
-    const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
-    for (final c in cands) {
-      if (html.MediaRecorder.isTypeSupported(c)) return c;
-    }
-    return 'audio/webm';
-  }
-
-  void _abortVoiceRecording() {
-    _wantVoiceRecord = false;
-    _voiceSendAfterStop = false;
-    _voiceRecordTicker?.cancel();
-    _voiceRecordTicker = null;
-    try {
-      _voiceMediaRecorder?.stop();
-    } catch (_) {}
-    if (_voiceMediaRecorder != null && _voiceDataListener != null) {
-      _voiceMediaRecorder!.removeEventListener('dataavailable', _voiceDataListener);
-    }
-    if (_voiceMediaRecorder != null && _voiceStopListener != null) {
-      _voiceMediaRecorder!.removeEventListener('stop', _voiceStopListener);
-    }
-    _voiceDataListener = null;
-    _voiceStopListener = null;
-    _voiceMediaRecorder = null;
-    _voiceChunks.clear();
-    _voiceMediaStream?.getTracks().forEach((t) => t.stop());
-    _voiceMediaStream = null;
-    _isRecordingVoice = false;
-    _voiceRecordElapsedSec = 0;
-  }
-
-  Future<void> _beginVoiceRecording() async {
-    if (_textCtrl.text.isNotEmpty) return;
-    _wantVoiceRecord = true;
-    final md = html.window.navigator.mediaDevices;
-    if (md == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Tu navegador no permite grabar audio'), backgroundColor: Color(0xFFE53935)),
-        );
-      }
-      return;
-    }
-    try {
-      final stream = await md.getUserMedia({'audio': true});
-      if (!_wantVoiceRecord) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
-      _voiceMimeUsed = _pickVoiceMimeType();
-      _voiceChunks.clear();
-      _voiceMediaStream = stream;
-      final recorder = html.MediaRecorder(stream, {'mimeType': _voiceMimeUsed});
-      _voiceMediaRecorder = recorder;
-
-      _voiceDataListener = (html.Event e) {
-        if (e is! html.BlobEvent) return;
-        final blob = e.data;
-        if (blob != null && blob.size > 0) _voiceChunks.add(blob);
-      };
-      recorder.addEventListener('dataavailable', _voiceDataListener);
-
-      _voiceStopListener = (html.Event e) {
-        recorder.removeEventListener('dataavailable', _voiceDataListener);
-        recorder.removeEventListener('stop', _voiceStopListener);
-        _voiceDataListener = null;
-        _voiceStopListener = null;
-        _voiceMediaRecorder = null;
-        _voiceRecordTicker?.cancel();
-        _voiceRecordTicker = null;
-        _voiceMediaStream?.getTracks().forEach((t) => t.stop());
-        _voiceMediaStream = null;
-
-        final send = _voiceSendAfterStop;
-        _voiceSendAfterStop = true;
-        _isRecordingVoice = false;
-        if (!send) {
-          _voiceChunks.clear();
-          if (mounted) setState(() {});
-          return;
-        }
-        if (_voiceChunks.isEmpty) {
-          if (mounted) {
-            setState(() {});
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Grabación vacía o demasiado corta'), backgroundColor: Color(0xFF8696A0)),
-            );
-          }
-          return;
-        }
-        final blob = html.Blob(_voiceChunks, _voiceMimeUsed);
-        _voiceChunks.clear();
-        final reader = html.FileReader();
-        reader.readAsArrayBuffer(blob);
-        reader.onLoad.listen((_) {
-          if (!mounted) return;
-          final raw = reader.result;
-          if (raw == null) return;
-          if (raw is! ByteBuffer) return;
-          final bytes = Uint8List.view(raw);
-          if (bytes.isEmpty) {
-            setState(() {});
-            return;
-          }
-          final dur = _voiceRecordElapsedSec.clamp(1, 359999);
-          setState(() {
-            _voiceRecordElapsedSec = 0;
-            _msgs.add(_ChatMsg(
-              voiceBytes: bytes,
-              voiceDurationSec: dur,
-              voiceMime: _voiceMimeUsed,
-              time: _now(),
-              dateTime: DateTime.now(),
-              isMe: _sendingAsMe,
-            ));
-          });
-          _scrollToBottom();
-        });
-      };
-      recorder.addEventListener('stop', _voiceStopListener);
-
-      recorder.start();
-      _isRecordingVoice = true;
-      _voiceRecordElapsedSec = 0;
-      _voiceRecordTicker = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _voiceRecordElapsedSec++);
-      });
-      if (mounted) setState(() {});
-    } catch (e) {
-      _wantVoiceRecord = false;
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo usar el micrófono: $e'), backgroundColor: const Color(0xFFE53935)),
-        );
-      }
-    }
-  }
-
-  void _endVoiceRecording({required bool send}) {
-    if (!_isRecordingVoice && !_wantVoiceRecord) return;
-    if (!_isRecordingVoice) {
-      _wantVoiceRecord = false;
-      return;
-    }
-    _wantVoiceRecord = false;
-    _voiceSendAfterStop = send;
-    try {
-      _voiceMediaRecorder?.stop();
-    } catch (_) {}
-    if (mounted) setState(() {});
   }
 
   String _now() => _formatTimeLabel(DateTime.now());
@@ -848,58 +713,41 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     setState(() {
       _msgs[index] = msg.copyWith(time: _formatTimeLabel(newDt), dateTime: newDt);
     });
+    _persistChat();
   }
 
   void _sendText() {
     final txt = _textCtrl.text.trim();
     if (txt.isEmpty) return;
     setState(() {
-      _msgs.add(_ChatMsg(text: txt, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
+      _msgs.add(ChatMsg(text: txt, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
       _textCtrl.clear();
     });
+    _persistChat();
     _scrollToBottom();
   }
 
-  void _pickImage() {
-    final input = html.FileUploadInputElement()..accept = 'image/*';
-    input.click();
-    input.onChange.listen((_) {
-      final file = input.files?.first;
-      if (file == null) return;
-      final reader = html.FileReader();
-      reader.readAsArrayBuffer(file);
-      reader.onLoad.listen((_) {
-        final bytes = Uint8List.fromList(reader.result as List<int>);
-        if (mounted) {
-          setState(() => _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe)));
-          _scrollToBottom();
-        }
-      });
+  Future<void> _pickImage() async {
+    await pickImageBytes((bytes) {
+      if (!mounted) return;
+      setState(() => _msgs.add(ChatMsg(imageBytes: bytes, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe)));
+      _persistChat();
+      _scrollToBottom();
     });
   }
 
-  void _pickFile() {
-    final input = html.FileUploadInputElement()..accept = 'image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx,.txt';
-    input.click();
-    input.onChange.listen((_) {
-      final file = input.files?.first;
-      if (file == null) return;
-      final isImage = file.type.startsWith('image/');
-      final reader = html.FileReader();
-      reader.readAsArrayBuffer(file);
-      reader.onLoad.listen((_) {
-        final bytes = Uint8List.fromList(reader.result as List<int>);
-        if (mounted) {
-          setState(() {
-            if (isImage) {
-              _msgs.add(_ChatMsg(imageBytes: bytes, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
-            } else {
-              _msgs.add(_ChatMsg(fileBytes: bytes, fileName: file.name, fileSize: file.size, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
-            }
-          });
-          _scrollToBottom();
+  Future<void> _pickFile() async {
+    await pickFileBytes((bytes, {required bool isImage, String? name, int? size}) {
+      if (!mounted) return;
+      setState(() {
+        if (isImage) {
+          _msgs.add(ChatMsg(imageBytes: bytes, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
+        } else {
+          _msgs.add(ChatMsg(fileBytes: bytes, fileName: name, fileSize: size, time: _now(), dateTime: DateTime.now(), isMe: _sendingAsMe));
         }
       });
+      _persistChat();
+      _scrollToBottom();
     });
   }
 
@@ -926,6 +774,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               onTap: () {
                 Navigator.pop(ctx);
                 setState(() => _msgs[index] = msg.copyWith(isForwarded: !msg.isForwarded));
+                _persistChat();
               },
             ),
             if (msg.text != null || msg.imageBytes != null || msg.assetPath != null || msg.voiceBytes != null) ...[
@@ -942,6 +791,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 onTap: () {
                   Navigator.pop(ctx);
                   setState(() => _msgs[index] = msg.copyWith(showForwardIconAside: !msg.showForwardIconAside));
+                  _persistChat();
                 },
               ),
             ],
@@ -961,6 +811,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               onTap: () {
                 Navigator.pop(ctx);
                 setState(() => _msgs.removeAt(index));
+                _persistChat();
               },
             ),
             ListTile(
@@ -975,18 +826,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     );
   }
 
-  void _pickContactPhoto() {
-    final input = html.FileUploadInputElement()..accept = 'image/*';
-    input.click();
-    input.onChange.listen((_) {
-      final file = input.files?.first;
-      if (file == null) return;
-      final reader = html.FileReader();
-      reader.readAsArrayBuffer(file);
-      reader.onLoad.listen((_) {
-        final bytes = Uint8List.fromList(reader.result as List<int>);
-        if (mounted) setState(() => _contactPhoto = bytes);
-      });
+  Future<void> _pickContactPhoto() async {
+    await pickContactPhotoBytes((bytes) {
+      if (!mounted) return;
+      setState(() => _contactPhoto = bytes);
+      _persistChat();
     });
   }
 
@@ -1000,13 +844,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_chatReady) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0B141B),
+        body: Center(child: CircularProgressIndicator(color: Color(0xFF00A884))),
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
         title: Row(
           children: [
             GestureDetector(
-              onTap: _pickContactPhoto,
+              onTap: () => _pickContactPhoto(),
               child: Stack(
                 children: [
                   CircleAvatar(
@@ -1132,7 +982,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   ],
                 ),
               ),
-              if (_isRecordingVoice)
+              if (_voice.isRecording)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   child: Container(
@@ -1147,7 +997,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                         const Icon(Icons.fiber_manual_record, color: Color(0xFFE53935), size: 18),
                         const SizedBox(width: 10),
                         Text(
-                          'Grabando… ${_fmtVoiceDuration(_voiceRecordElapsedSec)}',
+                          'Grabando… ${_fmtVoiceDuration(_voice.elapsedSec)}',
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(width: 8),
@@ -1192,23 +1042,23 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       behavior: HitTestBehavior.opaque,
                       onPointerDown: (_) {
                         if (_textCtrl.text.isEmpty) {
-                          _beginVoiceRecording();
+                          unawaited(_voice.beginRecording());
                         }
                       },
                       onPointerUp: (_) {
                         if (_textCtrl.text.isNotEmpty) {
                           _sendText();
                         } else {
-                          _endVoiceRecording(send: true);
+                          unawaited(_voice.endRecording(send: true));
                         }
                       },
                       onPointerCancel: (_) {
                         if (_textCtrl.text.isEmpty) {
-                          _endVoiceRecording(send: false);
+                          unawaited(_voice.endRecording(send: false));
                         }
                       },
                       child: CircleAvatar(
-                        backgroundColor: _isRecordingVoice
+                        backgroundColor: _voice.isRecording
                             ? const Color(0xFFE53935)
                             : const Color(0xFF00A884),
                         radius: 24,
@@ -1254,7 +1104,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _VoiceNotePlayRow(bytes: bytes, mimeType: mime, durationSec: durationSec),
+                  VoiceNotePlayRow(bytes: bytes, mimeType: mime, durationSec: durationSec),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
@@ -1422,10 +1272,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       IconButton(
                         icon: const Icon(Icons.download, color: Color(0xFF8696A0), size: 20),
                         onPressed: () {
-                          final blob = html.Blob([bytes]);
-                          final url = html.Url.createObjectUrlFromBlob(blob);
-                          html.AnchorElement(href: url)..setAttribute('download', fileName)..click();
-                          html.Url.revokeObjectUrl(url);
+                          unawaited(downloadNamedBytes(fileName: fileName, bytes: bytes));
                         },
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
@@ -1470,6 +1317,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             onPressed: () {
               Navigator.pop(ctx);
               setState(() => _msgs.clear());
+              _persistChat();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Chat vaciado'), backgroundColor: Color(0xFF00A884)),
               );
@@ -1497,7 +1345,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             label: const Text('Sin archivos', style: TextStyle(color: Color(0xFF8696A0))),
             onPressed: () {
               Navigator.pop(ctx);
-              _doExportTxt(contactFirstName);
+              unawaited(_doExportTxt(contactFirstName));
             },
           ),
           // Con archivos — ZIP
@@ -1507,7 +1355,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A884), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
             onPressed: () {
               Navigator.pop(ctx);
-              _doExportZip(contactFirstName);
+              unawaited(_doExportZip(contactFirstName));
             },
           ),
         ],
@@ -1543,22 +1391,18 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 
   // Exportar solo TXT
-  void _doExportTxt(String contactFirstName) {
+  Future<void> _doExportTxt(String contactFirstName) async {
     final txt = _buildChatTxt(contactFirstName);
     final bytes = utf8.encode(txt);
-    final blob = html.Blob([bytes]);
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    html.AnchorElement(href: url)
-      ..setAttribute('download', 'Chat de WhatsApp con $contactFirstName.txt')
-      ..click();
-    html.Url.revokeObjectUrl(url);
+    await downloadNamedBytes(fileName: 'Chat de WhatsApp con $contactFirstName.txt', bytes: bytes);
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Chat exportado (.txt)'), backgroundColor: Color(0xFF00A884)),
     );
   }
 
   // Exportar ZIP con TXT + todos los archivos adjuntos
-  void _doExportZip(String contactFirstName) {
+  Future<void> _doExportZip(String contactFirstName) async {
     final archive = Archive();
 
     // Agregar el .txt
@@ -1571,7 +1415,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     int voiceCount = 1;
     for (final m in _msgs) {
       if (m.voiceBytes != null) {
-        final ext = (m.voiceMime ?? '').contains('mp4') ? 'm4a' : 'webm';
+        final vm = m.voiceMime ?? '';
+        final ext = vm.contains('aac') || vm.contains('mp4') ? 'm4a' : 'webm';
         final name = 'VOZ-$voiceCount.$ext';
         archive.addFile(ArchiveFile(name, m.voiceBytes!.length, m.voiceBytes!));
         voiceCount++;
@@ -1585,15 +1430,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       }
     }
 
-    // Codificar ZIP y descargar
+    // Codificar ZIP y descargar / compartir
     final zipBytes = ZipEncoder().encode(archive);
     if (zipBytes == null) return;
-    final blob = html.Blob([Uint8List.fromList(zipBytes)]);
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    html.AnchorElement(href: url)
-      ..setAttribute('download', 'Chat de WhatsApp con $contactFirstName.zip')
-      ..click();
-    html.Url.revokeObjectUrl(url);
+    await downloadNamedBytes(fileName: 'Chat de WhatsApp con $contactFirstName.zip', bytes: zipBytes);
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Exportado: ${imgCount - 1} imágenes + ${fileCount - 1} archivos'), backgroundColor: const Color(0xFF00A884)),
     );
@@ -1789,88 +1630,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             ),
         ],
       ),
-    );
-  }
-}
-
-/// Reproductor de nota de voz en web (AudioElement + blob URL)
-class _VoiceNotePlayRow extends StatefulWidget {
-  final Uint8List bytes;
-  final String mimeType;
-  final int durationSec;
-  const _VoiceNotePlayRow({required this.bytes, required this.mimeType, required this.durationSec});
-
-  @override
-  State<_VoiceNotePlayRow> createState() => _VoiceNotePlayRowState();
-}
-
-class _VoiceNotePlayRowState extends State<_VoiceNotePlayRow> {
-  bool _playing = false;
-  html.AudioElement? _audio;
-  String? _objectUrl;
-
-  String get _label {
-    final s = widget.durationSec.clamp(0, 359999);
-    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
-  }
-
-  void _toggle() {
-    if (_playing) {
-      _audio?.pause();
-      try {
-        _audio?.currentTime = 0;
-      } catch (_) {}
-      setState(() => _playing = false);
-      return;
-    }
-    _objectUrl ??= html.Url.createObjectUrlFromBlob(html.Blob([widget.bytes], widget.mimeType));
-    _audio ??= html.AudioElement()
-      ..src = _objectUrl!
-      ..onEnded.listen((_) {
-        if (mounted) setState(() => _playing = false);
-      });
-    _audio!.play();
-    setState(() => _playing = true);
-  }
-
-  @override
-  void dispose() {
-    _audio?.pause();
-    final u = _objectUrl;
-    if (u != null) html.Url.revokeObjectUrl(u);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: _toggle,
-            borderRadius: BorderRadius.circular(22),
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: const BoxDecoration(color: Color(0xFF00A884), shape: BoxShape.circle),
-              child: Icon(_playing ? Icons.pause : Icons.play_arrow, color: Colors.black, size: 26),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Container(
-            height: 3,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.25),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Text(_label, style: const TextStyle(color: Color(0xFF8696A0), fontSize: 12, fontWeight: FontWeight.w500)),
-      ],
     );
   }
 }
