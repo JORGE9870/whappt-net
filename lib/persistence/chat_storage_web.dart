@@ -43,7 +43,7 @@ class ChatLocalStorage {
   static Future<void> saveContactPhoto(String chatName, Uint8List? bytes) async {
     final k = _photoKey(chatName);
     if (bytes == null || bytes.isEmpty) {
-      html.window.localStorage.removeItem(k);
+      html.window.localStorage.remove(k);
     } else {
       html.window.localStorage[k] = base64Encode(bytes);
     }
